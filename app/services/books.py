@@ -2,11 +2,19 @@
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Book
 from app.schemas import BookCreate, BookPage, BookSort, BookUpdate
+
+# The orderings ``sort`` accepts. Any other value is rejected by the BookSort literal.
+SORT_COLUMNS = {
+    "title": Book.title.asc(),
+    "-title": Book.title.desc(),
+    "price": Book.price_cents.asc(),
+    "-price": Book.price_cents.desc(),
+}
 
 
 def create_book(db: Session, data: BookCreate) -> Book:
@@ -63,13 +71,22 @@ def list_books(
     """
     query = select(Book)
     if q:
-        query = query.where(Book.title.icontains(q, autoescape=True))
+        query = query.where(
+            or_(Book.title.icontains(q, autoescape=True), Book.author.icontains(q, autoescape=True))
+        )
     if restricted is not None:
         query = query.where(Book.restricted == restricted)
-    # TODO: min_price / max_price filters
+    if min_price is not None:
+        query = query.where(Book.price_cents >= min_price)
+    if max_price is not None:
+        query = query.where(Book.price_cents <= max_price)
 
-    # TODO: apply ``sort``
-    books = db.scalars(query.order_by(Book.id.asc()).limit(limit).offset(offset)).all()
-    total = len(books)
+    # Counted off the filtered query before paging, so it reports every match rather than
+    # the size of the page being returned.
+    total = db.scalar(select(func.count()).select_from(query.subquery()))
+
+    # Ties always fall back to id so a page boundary can't reorder equal rows between requests.
+    query = query.order_by(SORT_COLUMNS[sort], Book.id.asc()) if sort else query.order_by(Book.id.asc())
+    books = db.scalars(query.limit(limit).offset(offset)).all()
 
     return BookPage(items=books, total=total, limit=limit, offset=offset)
