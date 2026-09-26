@@ -46,7 +46,12 @@ def to_loan_out(loan: Loan, now: datetime) -> LoanOut:
 
 def calculate_late_fee(due_at: datetime, returned_at: datetime, price_cents: int) -> int:
     """25 cents per started day late (any partial day counts), capped at the book's price; 0 if not late."""
-    raise NotImplementedError("calculate_late_fee")
+    if returned_at <= due_at:
+        return 0
+    overdue_by = returned_at - due_at
+    # Any remainder past a whole day starts the next one, so a second late costs a full day.
+    days_late = overdue_by.days + (1 if overdue_by.seconds or overdue_by.microseconds else 0)
+    return min(days_late * LATE_FEE_PER_DAY_CENTS, price_cents)
 
 
 def create_loan(db: Session, data: LoanCreate, now: datetime) -> LoanOut:
@@ -117,7 +122,17 @@ def return_loan(db: Session, loan_id: int, now: datetime) -> LoanOut:
     Rules: 404 if missing; 409 if already returned. Sets returned_at = now, restores one copy
     of stock and charges a late fee (see ``calculate_late_fee``).
     """
-    raise NotImplementedError("return_loan")
+    loan = load_loan(db, loan_id)
+    if loan.returned_at is not None:
+        raise HTTPException(status_code=409, detail="This loan has already been returned")
+
+    loan.returned_at = now
+    # Priced at return time, so a book that was repriced while on loan is charged at today's value.
+    loan.late_fee_cents = calculate_late_fee(loan.due_at, now, loan.book.price_cents)
+    loan.book.stock += 1
+    db.commit()
+    db.refresh(loan)
+    return to_loan_out(loan, now)
 
 
 def list_member_loans(
