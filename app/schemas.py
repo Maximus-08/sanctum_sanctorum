@@ -110,7 +110,12 @@ class MemberCreate(BaseModel):
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: str) -> str:
-        """Validate and normalize the email address."""
+        """Validate and normalize the email address.
+
+        Normalizing first means surrounding whitespace never reaches the pattern, and the
+        stored form is what the uniqueness check in the service compares against.
+        """
+        value = value.strip().lower()
         if not EMAIL_PATTERN.match(value):
             raise ValueError("email is not valid")
         return value
